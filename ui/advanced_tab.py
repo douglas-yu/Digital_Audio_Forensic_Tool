@@ -6,7 +6,8 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QComboBox, QGroupBox, QTabWidget, QTextEdit, QTableWidget,
     QTableWidgetItem, QHeaderView, QProgressBar, QScrollArea,
-    QSpinBox, QSplitter, QFileDialog,
+    QSpinBox, QSplitter, QFileDialog, QInputDialog, QMessageBox,
+    QListWidget, QListWidgetItem,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
@@ -42,6 +43,7 @@ class VoiceprintWorker(QThread):
                     'embedding_norm': float(np.linalg.norm(embedding)),
                     'model_used': 'Wespeaker ResNet34 (Neural)',
                     'embedding': embedding.tolist()[:10],  # first 10 dims for display
+                    'full_embedding': embedding.tolist(),  # full embedding for save/compare
                 }
                 self.finished.emit(result)
                 diar = embedder.diarize(self.y, self.sr)
@@ -128,6 +130,80 @@ class AIDetectionWorker(QThread):
             self.error.emit(str(e))
 
 
+class VoiceprintCompareWorker(QThread):
+    """Worker to compare two voiceprints."""
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, embedding1, embedding2, sr=16000):
+        super().__init__()
+        self.embedding1 = embedding1
+        self.embedding2 = embedding2
+        self.sr = sr
+
+    def run(self):
+        try:
+            import numpy as np
+            emb1 = np.array(self.embedding1, dtype=np.float32)
+            emb2 = np.array(self.embedding2, dtype=np.float32)
+
+            # Normalize
+            emb1 = emb1 / (np.linalg.norm(emb1) + 1e-8)
+            emb2 = emb2 / (np.linalg.norm(emb2) + 1e-8)
+
+            cosine_sim = float(np.dot(emb1, emb2))
+            euclidean_dist = float(np.linalg.norm(emb1 - emb2))
+
+            if cosine_sim >= 0.75:
+                verdict = "极可能同一说话人"
+                confidence = "高"
+            elif cosine_sim >= 0.55:
+                verdict = "可能同一说话人"
+                confidence = "中"
+            elif cosine_sim >= 0.35:
+                verdict = "不确定"
+                confidence = "低"
+            else:
+                verdict = "极可能不同说话人"
+                confidence = "高"
+
+            self.finished.emit({
+                'cosine_similarity': cosine_sim,
+                'euclidean_distance': euclidean_dist,
+                'verdict': verdict,
+                'confidence': confidence,
+            })
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class VoiceprintExtractWorker(QThread):
+    """Worker to extract voiceprint from an external file."""
+    finished = pyqtSignal(object)  # numpy array embedding
+    error = pyqtSignal(str)
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        try:
+            import librosa
+            y, sr = librosa.load(self.file_path, sr=None, mono=True)
+            try:
+                from core.model_integration import SpeakerEmbedder
+                embedder = SpeakerEmbedder()
+                embedding = embedder.extract_embedding(y, sr)
+            except Exception:
+                from core.voiceprint import VoiceprintAnalyzer
+                analyzer = VoiceprintAnalyzer(y, sr)
+                result = analyzer.extract_voiceprint()
+                embedding = result.get('embedding', [])
+            self.finished.emit(embedding)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 # ── Main Tab ────────────────────────────────────────────────────────
 
 class AdvancedAnalysisTab(QWidget):
@@ -160,7 +236,7 @@ class AdvancedAnalysisTab(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # Controls
+        # Controls row 1: Extract
         ctrl = QHBoxLayout()
         self.btn_voiceprint = QPushButton("提取声纹特征")
         self.btn_voiceprint.clicked.connect(self._run_voiceprint)
@@ -168,10 +244,39 @@ class AdvancedAnalysisTab(QWidget):
         self.progress_vp = QProgressBar()
         self.progress_vp.setVisible(False)
         ctrl.addWidget(self.progress_vp)
+
+        self.btn_save_vp = QPushButton("💾 保存声纹")
+        self.btn_save_vp.clicked.connect(self._save_voiceprint)
+        self.btn_save_vp.setEnabled(False)
+        ctrl.addWidget(self.btn_save_vp)
         ctrl.addStretch()
         layout.addLayout(ctrl)
 
+        # Controls row 2: Compare
+        ctrl2 = QHBoxLayout()
+        self.btn_compare_vp = QPushButton("🔍 声纹对比")
+        self.btn_compare_vp.clicked.connect(self._compare_voiceprint)
+        self.btn_compare_vp.setEnabled(False)
+        ctrl2.addWidget(self.btn_compare_vp)
+
+        self.btn_compare_file = QPushButton("📂 选择对比音频文件")
+        self.btn_compare_file.clicked.connect(self._compare_with_file)
+        self.btn_compare_file.setEnabled(False)
+        ctrl2.addWidget(self.btn_compare_file)
+
+        self.btn_delete_vp = QPushButton("🗑 删除声纹")
+        self.btn_delete_vp.clicked.connect(self._delete_voiceprint)
+        ctrl2.addWidget(self.btn_delete_vp)
+        ctrl2.addStretch()
+        layout.addLayout(ctrl2)
+
+        # Main content splitter
         splitter = QSplitter(Qt.Horizontal)
+
+        # Left: Features + saved voiceprints
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
         # Features table
         feat_group = QGroupBox("声纹特征")
@@ -182,18 +287,49 @@ class AdvancedAnalysisTab(QWidget):
         self.tbl_voiceprint.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_voiceprint.setEditTriggers(QTableWidget.NoEditTriggers)
         feat_layout.addWidget(self.tbl_voiceprint)
-        splitter.addWidget(feat_group)
+        left_layout.addWidget(feat_group)
 
-        # Diarization results
+        # Saved voiceprints list
+        saved_group = QGroupBox("已保存声纹库")
+        saved_layout = QVBoxLayout(saved_group)
+        self.list_saved_vp = QListWidget()
+        self.list_saved_vp.setMaximumHeight(150)
+        saved_layout.addWidget(self.list_saved_vp)
+        left_layout.addWidget(saved_group)
+
+        splitter.addWidget(left_widget)
+
+        # Right: Diarization + comparison results
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
         diar_group = QGroupBox("说话人分离")
         diar_layout = QVBoxLayout(diar_group)
         self.txt_diarization = QTextEdit()
         self.txt_diarization.setReadOnly(True)
         self.txt_diarization.setPlaceholderText("运行声纹分析后显示说话人分离结果...")
         diar_layout.addWidget(self.txt_diarization)
-        splitter.addWidget(diar_group)
+        right_layout.addWidget(diar_group)
+
+        compare_group = QGroupBox("声纹对比结果")
+        compare_layout = QVBoxLayout(compare_group)
+        self.txt_compare_result = QTextEdit()
+        self.txt_compare_result.setReadOnly(True)
+        self.txt_compare_result.setPlaceholderText("选择已保存声纹或音频文件进行对比...")
+        compare_layout.addWidget(self.txt_compare_result)
+        right_layout.addWidget(compare_group)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([400, 600])
 
         layout.addWidget(splitter, stretch=1)
+
+        # Load saved voiceprints
+        self._voiceprint_db = {}  # name -> embedding array
+        self._current_embedding = None
+        self._load_voiceprint_db()
+
         return widget
 
     # ── Content Panel ─────────────────────────────────────────────
@@ -395,12 +531,26 @@ class AdvancedAnalysisTab(QWidget):
         model_used = result.get("model_used", result.get("method", "N/A"))
         embedding_dim = result.get("embedding_dim", 0)
 
+        # Store current embedding for save/compare (prefer full over truncated)
+        if "full_embedding" in result:
+            self._current_embedding = result["full_embedding"]
+        elif "embedding" in result:
+            self._current_embedding = result["embedding"]
+        else:
+            self._current_embedding = None
+
+        # Enable save/compare if we have an embedding
+        has_emb = self._current_embedding is not None
+        self.btn_save_vp.setEnabled(has_emb)
+        self.btn_compare_vp.setEnabled(has_emb and len(self._voiceprint_db) > 0)
+        self.btn_compare_file.setEnabled(has_emb)
+
         rows = [("使用模型", model_used), ("嵌入维度", str(embedding_dim))]
 
         # Neural model specific fields
         if "embedding_norm" in result:
             rows.append(("嵌入向量L2范数", f"{result['embedding_norm']:.4f}"))
-        if "embedding" in result:
+        if "embedding" in result and isinstance(result["embedding"], list):
             rows.append(("嵌入前10维", str([f"{v:.3f}" for v in result['embedding'][:10]])))
 
         # Heuristic model features
@@ -412,6 +562,244 @@ class AdvancedAnalysisTab(QWidget):
         for row_idx, (k, v) in enumerate(rows):
             self.tbl_voiceprint.setItem(row_idx, 0, QTableWidgetItem(k))
             self.tbl_voiceprint.setItem(row_idx, 1, QTableWidgetItem(v))
+
+    # ── Voiceprint Save/Compare Methods ──────────────────────────
+
+    def _get_vp_db_path(self):
+        """Get path to voiceprint database file."""
+        import os
+        app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        db_dir = os.path.join(app_dir, "voiceprint_db")
+        os.makedirs(db_dir, exist_ok=True)
+        return db_dir
+
+    def _load_voiceprint_db(self):
+        """Load saved voiceprints from disk."""
+        import os, json
+        db_dir = self._get_vp_db_path()
+        self._voiceprint_db = {}
+        self.list_saved_vp.clear()
+
+        if not os.path.exists(db_dir):
+            return
+
+        for fname in sorted(os.listdir(db_dir)):
+            if fname.endswith(".json"):
+                try:
+                    fpath = os.path.join(db_dir, fname)
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    name = data.get("name", fname.replace(".json", ""))
+                    self._voiceprint_db[name] = {
+                        'embedding': data['embedding'],
+                        'source_file': data.get('source_file', ''),
+                        'model': data.get('model', ''),
+                        'timestamp': data.get('timestamp', ''),
+                    }
+                    item_text = f"{name} ({data.get('source_file', 'unknown')})"
+                    self.list_saved_vp.addItem(item_text)
+                except Exception:
+                    pass
+
+    def _save_voiceprint(self):
+        """Save current voiceprint embedding with a name."""
+        if self._current_embedding is None:
+            QMessageBox.warning(self, "警告", "当前没有可保存的声纹数据。请先提取声纹。")
+            return
+
+        name, ok = QInputDialog.getText(self, "保存声纹", "请输入声纹名称（如说话人姓名）:")
+        if not ok or not name.strip():
+            return
+
+        name = name.strip()
+        import os, json, datetime
+
+        db_dir = self._get_vp_db_path()
+        data = {
+            "name": name,
+            "embedding": self._current_embedding if isinstance(self._current_embedding, list)
+                         else self._current_embedding.tolist() if hasattr(self._current_embedding, 'tolist')
+                         else list(self._current_embedding),
+            "source_file": self._audio.file_name if self._audio else "",
+            "model": self._results.get("voiceprint", {}).get("model_used", "unknown"),
+            "timestamp": datetime.datetime.now().isoformat(),
+            "embedding_dim": len(self._current_embedding),
+        }
+
+        safe_name = "".join(c for c in name if c.isalnum() or c in "._- ").strip()
+        fpath = os.path.join(db_dir, f"{safe_name}.json")
+        with open(fpath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        self._load_voiceprint_db()
+        self.btn_compare_vp.setEnabled(True)
+        QMessageBox.information(self, "保存成功", f"声纹 \"{name}\" 已保存到声纹库。")
+
+    def _delete_voiceprint(self):
+        """Delete selected voiceprint from database."""
+        current = self.list_saved_vp.currentItem()
+        if not current:
+            QMessageBox.warning(self, "提示", "请先在声纹库中选择要删除的项目。")
+            return
+
+        name = list(self._voiceprint_db.keys())[self.list_saved_vp.currentRow()]
+        reply = QMessageBox.question(self, "确认删除",
+                                     f"确定要删除声纹 \"{name}\" 吗？",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            import os
+            db_dir = self._get_vp_db_path()
+            safe_name = "".join(c for c in name if c.isalnum() or c in "._- ").strip()
+            fpath = os.path.join(db_dir, f"{safe_name}.json")
+            if os.path.exists(fpath):
+                os.remove(fpath)
+            self._load_voiceprint_db()
+
+    def _compare_voiceprint(self):
+        """Compare current voiceprint against saved ones."""
+        if self._current_embedding is None:
+            return
+        if not self._voiceprint_db:
+            QMessageBox.information(self, "提示", "声纹库为空，请先保存声纹。")
+            return
+
+        lines = ["=" * 50, "  声纹对比结果 (当前音频 vs 声纹库)", "=" * 50, ""]
+
+        current_emb = np.array(self._current_embedding, dtype=np.float32)
+        current_emb = current_emb / (np.linalg.norm(current_emb) + 1e-8)
+
+        results = []
+        for name, data in self._voiceprint_db.items():
+            saved_emb = np.array(data['embedding'], dtype=np.float32)
+
+            # Skip incompatible dimensions (old truncated saves)
+            if len(saved_emb) != len(current_emb):
+                results.append((name, -1, -1, f"⚠ 维度不匹配 ({len(saved_emb)} vs {len(current_emb)})，请重新保存", data.get('source_file', '')))
+                continue
+
+            saved_emb = saved_emb / (np.linalg.norm(saved_emb) + 1e-8)
+
+            cosine_sim = float(np.dot(current_emb, saved_emb))
+            euclidean_dist = float(np.linalg.norm(current_emb - saved_emb))
+
+            if cosine_sim >= 0.75:
+                verdict = "✅ 极可能同一人"
+            elif cosine_sim >= 0.55:
+                verdict = "⚠️ 可能同一人"
+            elif cosine_sim >= 0.35:
+                verdict = "❓ 不确定"
+            else:
+                verdict = "❌ 极可能不同人"
+
+            results.append((name, cosine_sim, euclidean_dist, verdict, data.get('source_file', '')))
+
+        # Sort by similarity (highest first)
+        results.sort(key=lambda x: x[1], reverse=True)
+
+        for name, sim, dist, verdict, source in results:
+            lines.append(f"【{name}】 (来源: {source})")
+            lines.append(f"  余弦相似度: {sim:.4f}")
+            lines.append(f"  欧氏距离: {dist:.4f}")
+            lines.append(f"  判定: {verdict}")
+            lines.append("")
+
+        lines.append("─" * 50)
+        lines.append("判定标准:")
+        lines.append("  ≥0.75: 极可能同一人 | 0.55-0.75: 可能同一人")
+        lines.append("  0.35-0.55: 不确定 | <0.35: 极可能不同人")
+
+        self.txt_compare_result.setPlainText("\n".join(lines))
+
+    def _compare_with_file(self):
+        """Compare current voiceprint with a selected audio file."""
+        if self._current_embedding is None:
+            return
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择对比音频文件", "",
+            "音频文件 (*.wav *.mp3 *.flac *.ogg *.m4a *.wma);;所有文件 (*)"
+        )
+        if not file_path:
+            return
+
+        self.txt_compare_result.setPlainText("正在提取对比音频声纹，请稍候...")
+        self.btn_compare_file.setEnabled(False)
+
+        worker = VoiceprintExtractWorker(file_path)
+        worker.finished.connect(lambda emb: self._on_file_compare_done(emb, file_path))
+        worker.error.connect(lambda e: self._on_file_compare_error(e))
+        self._workers["compare_file"] = worker
+        worker.start()
+
+    def _on_file_compare_done(self, embedding, file_path):
+        """Handle completion of file voiceprint extraction for comparison."""
+        self.btn_compare_file.setEnabled(True)
+        import os
+
+        if embedding is None or (hasattr(embedding, '__len__') and len(embedding) == 0):
+            self.txt_compare_result.setPlainText("❌ 对比音频声纹提取失败。")
+            return
+
+        current_emb = np.array(self._current_embedding, dtype=np.float32)
+        compare_emb = np.array(embedding, dtype=np.float32)
+
+        current_emb = current_emb / (np.linalg.norm(current_emb) + 1e-8)
+        compare_emb = compare_emb / (np.linalg.norm(compare_emb) + 1e-8)
+
+        cosine_sim = float(np.dot(current_emb, compare_emb))
+        euclidean_dist = float(np.linalg.norm(current_emb - compare_emb))
+
+        if cosine_sim >= 0.75:
+            verdict = "✅ 极可能同一说话人"
+            confidence = "高"
+        elif cosine_sim >= 0.55:
+            verdict = "⚠️ 可能同一说话人"
+            confidence = "中"
+        elif cosine_sim >= 0.35:
+            verdict = "❓ 不确定"
+            confidence = "低"
+        else:
+            verdict = "❌ 极可能不同说话人"
+            confidence = "高"
+
+        lines = [
+            "=" * 50,
+            "  声纹同一性对比结果",
+            "=" * 50,
+            "",
+            f"  当前音频: {self._audio.file_name if self._audio else 'N/A'}",
+            f"  对比音频: {os.path.basename(file_path)}",
+            "",
+            "─" * 50,
+            f"  余弦相似度: {cosine_sim:.4f}",
+            f"  欧氏距离:   {euclidean_dist:.4f}",
+            "",
+            f"  ▶ 判定结果: {verdict}",
+            f"  ▶ 置信度:   {confidence}",
+            "",
+            "─" * 50,
+            "鉴定意见:",
+            "",
+        ]
+
+        if cosine_sim >= 0.75:
+            lines.append("  经声纹特征比对分析，两段音频中的说话人声纹特征高度一致，")
+            lines.append("  可以认定为同一说话人。")
+        elif cosine_sim >= 0.55:
+            lines.append("  经声纹特征比对分析，两段音频中的说话人声纹特征存在较高相似度，")
+            lines.append("  倾向于认定为同一说话人，但建议结合其他证据综合判断。")
+        elif cosine_sim >= 0.35:
+            lines.append("  经声纹特征比对分析，两段音频中的说话人声纹特征相似度处于临界区间，")
+            lines.append("  无法明确判定是否为同一说话人，建议采集更多样本进行分析。")
+        else:
+            lines.append("  经声纹特征比对分析，两段音频中的说话人声纹特征差异显著，")
+            lines.append("  可以认定为不同说话人。")
+
+        self.txt_compare_result.setPlainText("\n".join(lines))
+
+    def _on_file_compare_error(self, error_msg):
+        self.btn_compare_file.setEnabled(True)
+        self.txt_compare_result.setPlainText(f"❌ 对比失败: {error_msg}")
 
     def _on_diarization_done(self, result):
         # Handle both neural and heuristic results
@@ -777,8 +1165,13 @@ class AdvancedAnalysisTab(QWidget):
     def clear(self):
         self._audio = None
         self._results = {}
+        self._current_embedding = None
         self.tbl_voiceprint.setRowCount(0)
         self.txt_diarization.clear()
+        self.txt_compare_result.clear()
+        self.btn_save_vp.setEnabled(False)
+        self.btn_compare_vp.setEnabled(False)
+        self.btn_compare_file.setEnabled(False)
         self.txt_vad.clear()
         self.txt_noise.clear()
         self.txt_quality.clear()

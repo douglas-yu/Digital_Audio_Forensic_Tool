@@ -41,8 +41,7 @@ class MetadataTab(QWidget):
         raw_layout = QVBoxLayout(raw_group)
         self.txt_raw = QTextEdit()
         self.txt_raw.setReadOnly(True)
-        self.txt_raw.setMinimumHeight(300)
-        #self.txt_raw.setMaximumHeight(300)
+        self.txt_raw.setMaximumHeight(150)
         raw_layout.addWidget(self.txt_raw)
         layout.addWidget(raw_group)
 

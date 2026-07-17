@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+
+# AI model files (download separately)
+models/**/*.onnx
+!models/.gitkeep
+!models/*/config.json
+
+# Voiceprint database (user data)
+voiceprint_db/
