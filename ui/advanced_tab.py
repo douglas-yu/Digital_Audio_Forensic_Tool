@@ -204,6 +204,53 @@ class VoiceprintExtractWorker(QThread):
             self.error.emit(str(e))
 
 
+class TranscriptionWorker(QThread):
+    """Worker for speech transcription."""
+    finished = pyqtSignal(dict)
+    progress = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, audio_path, model_size="base", language=None):
+        super().__init__()
+        self.audio_path = audio_path
+        self.model_size = model_size
+        self.language = language
+
+    def run(self):
+        try:
+            self.progress.emit("正在加载 Whisper 模型...")
+            from core.transcription import SpeechTranscriber
+            transcriber = SpeechTranscriber(model_size=self.model_size)
+            self.progress.emit("正在转写...")
+            result = transcriber.transcribe(
+                audio_path=self.audio_path,
+                language=self.language,
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class EnvForgeryWorker(QThread):
+    """Worker for environmental sound forgery detection."""
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, y, sr):
+        super().__init__()
+        self.y = y
+        self.sr = sr
+
+    def run(self):
+        try:
+            from core.env_forgery_detector import EnvironmentalForgeryDetector
+            detector = EnvironmentalForgeryDetector(self.y, self.sr)
+            result = detector.detect()
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 # ── Main Tab ────────────────────────────────────────────────────────
 
 class AdvancedAnalysisTab(QWidget):
@@ -226,6 +273,8 @@ class AdvancedAnalysisTab(QWidget):
         self.sub_tabs.addTab(self._create_content_panel(), "📝 内容分析")
         self.sub_tabs.addTab(self._create_deepfake_panel(), "🎭 Deepfake检测")
         self.sub_tabs.addTab(self._create_ai_panel(), "🤖 AI生成检测")
+        self.sub_tabs.addTab(self._create_env_forgery_panel(), "🌿 环境声检测")
+        self.sub_tabs.addTab(self._create_transcription_panel(), "📝 语音转写")
         self.sub_tabs.addTab(self._create_model_panel(), "⚙️ 模型管理")
 
         layout.addWidget(self.sub_tabs)
@@ -449,6 +498,105 @@ class AdvancedAnalysisTab(QWidget):
         return widget
 
     # ── Model Management Panel ────────────────────────────────────
+
+    # ── Environment Forgery Panel ──────────────────────────────────
+
+    def _create_env_forgery_panel(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        ctrl = QHBoxLayout()
+        self.btn_env_forgery = QPushButton("检测环境声伪造")
+        self.btn_env_forgery.clicked.connect(self._run_env_forgery)
+        ctrl.addWidget(self.btn_env_forgery)
+        self.progress_ef = QProgressBar()
+        self.progress_ef.setVisible(False)
+        ctrl.addWidget(self.progress_ef)
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
+
+        # Verdict label
+        self.lbl_ef_verdict = QLabel("")
+        self.lbl_ef_verdict.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px;")
+        layout.addWidget(self.lbl_ef_verdict)
+
+        # Results
+        self.txt_env_forgery = QTextEdit()
+        self.txt_env_forgery.setReadOnly(True)
+        self.txt_env_forgery.setPlaceholderText("运行环境声伪造检测后显示结果...")
+        layout.addWidget(self.txt_env_forgery, stretch=1)
+
+        return widget
+
+    # ── Transcription Panel ──────────────────────────────────────
+
+    def _create_transcription_panel(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Controls
+        ctrl = QHBoxLayout()
+        self.btn_transcribe = QPushButton("开始转写")
+        self.btn_transcribe.clicked.connect(self._run_transcription)
+        ctrl.addWidget(self.btn_transcribe)
+
+        ctrl.addWidget(QLabel("模型:"))
+        self.cmb_whisper_model = QComboBox()
+        self.cmb_whisper_model.addItems(["tiny", "base", "small", "medium"])
+        self.cmb_whisper_model.setCurrentText("base")
+        self.cmb_whisper_model.setToolTip("tiny: 最快 | base: 平衡 | small: 较准 | medium: 高准确")
+        ctrl.addWidget(self.cmb_whisper_model)
+
+        ctrl.addWidget(QLabel("语言:"))
+        self.cmb_language = QComboBox()
+        self.cmb_language.addItems(["自动检测", "zh (中文)", "en (英文)", "ja (日文)", "ko (韩文)"])
+        ctrl.addWidget(self.cmb_language)
+
+        self.progress_tr = QProgressBar()
+        self.progress_tr.setVisible(False)
+        ctrl.addWidget(self.progress_tr)
+        self.lbl_tr_status = QLabel("")
+        ctrl.addWidget(self.lbl_tr_status)
+        ctrl.addStretch()
+        layout.addLayout(ctrl)
+
+        # Save controls
+        save_ctrl = QHBoxLayout()
+        self.btn_save_txt = QPushButton("💾 保存 TXT")
+        self.btn_save_txt.clicked.connect(lambda: self._save_transcript("txt"))
+        self.btn_save_txt.setEnabled(False)
+        save_ctrl.addWidget(self.btn_save_txt)
+
+        self.btn_save_srt = QPushButton("💾 保存 SRT")
+        self.btn_save_srt.clicked.connect(lambda: self._save_transcript("srt"))
+        self.btn_save_srt.setEnabled(False)
+        save_ctrl.addWidget(self.btn_save_srt)
+
+        self.btn_save_json = QPushButton("💾 保存 JSON")
+        self.btn_save_json.clicked.connect(lambda: self._save_transcript("json"))
+        self.btn_save_json.setEnabled(False)
+        save_ctrl.addWidget(self.btn_save_json)
+
+        save_ctrl.addStretch()
+        layout.addLayout(save_ctrl)
+
+        # Transcript info
+        self.lbl_tr_info = QLabel("")
+        self.lbl_tr_info.setStyleSheet("font-size: 12px; color: #555; padding: 3px;")
+        layout.addWidget(self.lbl_tr_info)
+
+        # Transcript text
+        self.txt_transcript = QTextEdit()
+        self.txt_transcript.setReadOnly(True)
+        self.txt_transcript.setPlaceholderText("点击「开始转写」提取语音内容...\n\n"
+                                                "支持中文、英文、日文等100+种语言自动检测。\n"
+                                                "首次运行会自动下载 Whisper 模型。")
+        layout.addWidget(self.txt_transcript, stretch=1)
+
+        self._transcript_result = None
+        return widget
+
+    # ── Model Panel ──────────────────────────────────────────────
 
     def _create_model_panel(self) -> QWidget:
         widget = QWidget()
@@ -1059,10 +1207,140 @@ class AdvancedAnalysisTab(QWidget):
 
         self.txt_ai.setPlainText("\n".join(lines))
 
+    # ── Environment Forgery Detection Methods ────────────────────
+
+    def _run_env_forgery(self):
+        if not self._audio or not self._audio.is_loaded:
+            return
+        self.btn_env_forgery.setEnabled(False)
+        self.progress_ef.setVisible(True)
+        self.progress_ef.setRange(0, 0)
+
+        worker = EnvForgeryWorker(self._audio.y, self._audio.sr)
+        worker.finished.connect(self._on_env_forgery_done)
+        worker.error.connect(lambda e: self._on_error("env_forgery", e))
+        self._workers["env_forgery"] = worker
+        worker.start()
+
+    def _on_env_forgery_done(self, result):
+        self._results["env_forgery"] = result
+        self.progress_ef.setVisible(False)
+        self.btn_env_forgery.setEnabled(True)
+
+        verdict = result.get("verdict", "未知")
+        risk = result.get("risk_level", "")
+        score = result.get("final_score", 0)
+
+        color_map = {"高": "#D32F2F", "中": "#FF8F00", "低": "#388E3C", "极低": "#1976D2"}
+        color = color_map.get(risk, "#333")
+        self.lbl_ef_verdict.setText(f"判定: {verdict} (风险: {risk})")
+        self.lbl_ef_verdict.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {color};")
+
+        lines = [
+            f"{'=' * 50}",
+            f"  环境声/非语音伪造检测结果",
+            f"{'=' * 50}",
+            f"\n综合评分: {score:.3f} / 1.0",
+            f"判定结果: {verdict}",
+            f"风险等级: {risk}",
+            f"\n{result.get('verdict_description', '')}",
+            f"\n{'─' * 50}",
+            "各维度评分:",
+        ]
+        for k, v in result.get("scores", {}).items():
+            bar = "█" * int(v * 20) + "░" * (20 - int(v * 20))
+            lines.append(f"  {k:15s} [{bar}] {v:.3f}")
+
+        lines.append(f"\n{'─' * 50}")
+        lines.append("检测证据:")
+        for indicator in result.get("indicators", []):
+            lines.append(f"  • {indicator}")
+
+        self.txt_env_forgery.setPlainText("\n".join(lines))
+
+    # ── Transcription Methods ────────────────────────────────────
+
+    def _run_transcription(self):
+        if not self._audio or not self._audio.is_loaded:
+            return
+        self.btn_transcribe.setEnabled(False)
+        self.progress_tr.setVisible(True)
+        self.progress_tr.setRange(0, 0)
+
+        model_size = self.cmb_whisper_model.currentText()
+        lang_text = self.cmb_language.currentText()
+        language = None
+        if lang_text != "自动检测":
+            language = lang_text.split(" ")[0]
+
+        worker = TranscriptionWorker(self._audio.file_path, model_size, language)
+        worker.finished.connect(self._on_transcription_done)
+        worker.progress.connect(lambda msg: self.lbl_tr_status.setText(msg))
+        worker.error.connect(lambda e: self._on_error("transcription", e))
+        self._workers["transcription"] = worker
+        worker.start()
+
+    def _on_transcription_done(self, result):
+        self._transcript_result = result
+        self._results["transcription"] = result
+        self.progress_tr.setVisible(False)
+        self.btn_transcribe.setEnabled(True)
+        self.lbl_tr_status.setText("")
+
+        # Enable save buttons
+        self.btn_save_txt.setEnabled(True)
+        self.btn_save_srt.setEnabled(True)
+        self.btn_save_json.setEnabled(True)
+
+        # Info label
+        lang = result.get("language", "unknown")
+        lang_prob = result.get("language_probability", 0)
+        dur = result.get("duration", 0)
+        n_seg = result.get("num_segments", 0)
+        model = result.get("model_size", "")
+        self.lbl_tr_info.setText(
+            f"语言: {lang} ({lang_prob:.0%}) | 模型: Whisper-{model} | "
+            f"时长: {dur:.1f}s | 段落: {n_seg}"
+        )
+
+        # Display transcript with timestamps
+        lines = []
+        for seg in result.get("segments", []):
+            start = seg["start"]
+            end = seg["end"]
+            text = seg["text"]
+            m1, s1 = divmod(start, 60)
+            m2, s2 = divmod(end, 60)
+            lines.append(f"[{int(m1):02d}:{s1:05.2f} → {int(m2):02d}:{s2:05.2f}]  {text}")
+
+        lines.append("\n" + "=" * 60)
+        lines.append("完整文本:\n")
+        lines.append(result.get("text", ""))
+
+        self.txt_transcript.setPlainText("\n".join(lines))
+
+    def _save_transcript(self, fmt: str):
+        if not self._transcript_result:
+            return
+
+        ext_map = {"txt": "文本文件 (*.txt)", "srt": "SRT字幕 (*.srt)", "json": "JSON (*.json)"}
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, f"保存转写结果 ({fmt.upper()})", "", ext_map.get(fmt, "All (*)")
+        )
+        if not file_path:
+            return
+
+        # Remove extension if user added it
+        import os
+        base, _ = os.path.splitext(file_path)
+
+        from core.transcription import SpeechTranscriber
+        transcriber = SpeechTranscriber()
+        saved_path = transcriber.save_transcript(self._transcript_result, base, fmt)
+        QMessageBox.information(self, "保存成功", f"转写结果已保存: {saved_path}")
+
     def _on_error(self, module, error_msg):
-        for key in ["voiceprint", "content", "deepfake", "ai"]:
-            getattr(self, f"progress_{key[:2]}", None)
-        # Reset relevant buttons
+        # Reset relevant buttons and progress bars
         if module == "voiceprint":
             self.progress_vp.setVisible(False)
             self.btn_voiceprint.setEnabled(True)
@@ -1075,6 +1353,15 @@ class AdvancedAnalysisTab(QWidget):
         elif module == "ai":
             self.progress_ai.setVisible(False)
             self.btn_ai.setEnabled(True)
+        elif module == "env_forgery":
+            self.progress_ef.setVisible(False)
+            self.btn_env_forgery.setEnabled(True)
+            self.txt_env_forgery.setPlainText(f"❌ 检测失败: {error_msg}")
+        elif module == "transcription":
+            self.progress_tr.setVisible(False)
+            self.btn_transcribe.setEnabled(True)
+            self.lbl_tr_status.setText("")
+            self.txt_transcript.setPlainText(f"❌ 转写失败: {error_msg}")
 
     def _refresh_model_status(self):
         from pathlib import Path
@@ -1166,6 +1453,7 @@ class AdvancedAnalysisTab(QWidget):
         self._audio = None
         self._results = {}
         self._current_embedding = None
+        self._transcript_result = None
         self.tbl_voiceprint.setRowCount(0)
         self.txt_diarization.clear()
         self.txt_compare_result.clear()
@@ -1177,7 +1465,15 @@ class AdvancedAnalysisTab(QWidget):
         self.txt_quality.clear()
         self.txt_deepfake.clear()
         self.txt_ai.clear()
+        self.txt_env_forgery.clear()
+        self.txt_transcript.clear()
         self.lbl_df_verdict.setText("")
         self.lbl_ai_verdict.setText("")
+        self.lbl_ef_verdict.setText("")
+        self.lbl_tr_info.setText("")
+        self.lbl_tr_status.setText("")
+        self.btn_save_txt.setEnabled(False)
+        self.btn_save_srt.setEnabled(False)
+        self.btn_save_json.setEnabled(False)
         self.fig_content.clear()
         self.canvas_content.draw()
