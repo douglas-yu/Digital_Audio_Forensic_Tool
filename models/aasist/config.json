@@ -1,0 +1,14 @@
+{
+  "name": "AASIST Anti-Spoofing",
+  "version": "1.0",
+  "type": "deepfake_detector",
+  "description": "AASIST-inspired dual-branch (raw waveform + spectral) anti-spoofing model",
+  "model_file": "aasist_antispoof.onnx",
+  "input_sample_rate": 16000,
+  "input_length_seconds": 4,
+  "input_format": "raw_audio_mono",
+  "output_format": "spoof_probability",
+  "architecture": "RawNet2 + Spectral dual-branch with attention pooling",
+  "note": "Untrained model structure - requires fine-tuning on ASVspoof dataset for production use",
+  "license": "MIT"
+}

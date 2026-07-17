@@ -1,0 +1,13 @@
+{
+    "name": "Silero VAD",
+    "version": "5.1",
+    "type": "vad",
+    "description": "Voice Activity Detection model from Silero Team",
+    "model_file": "silero_vad.onnx",
+    "input_sample_rate": 16000,
+    "window_size_samples": 512,
+    "input_format": "raw_audio",
+    "output_format": "probability",
+    "license": "MIT",
+    "source": "https://github.com/snakers4/silero-vad"
+}

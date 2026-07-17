@@ -1,0 +1,13 @@
+{
+    "name": "Wespeaker ResNet34",
+    "version": "1.0",
+    "type": "speaker_embedding",
+    "description": "Speaker embedding extraction model (ResNet34) from Wespeaker, trained on VoxCeleb",
+    "model_file": "speaker_model.onnx",
+    "input_sample_rate": 16000,
+    "embedding_dim": 256,
+    "input_format": "fbank_80",
+    "output_format": "embedding_vector",
+    "license": "Apache-2.0",
+    "source": "https://github.com/wenet-e2e/wespeaker"
+}
