@@ -1,0 +1,25 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <list>
+          <option value="PyQt5" />
+          <option value="numpy" />
+          <option value="matplotlib" />
+          <option value="Pillow" />
+          <option value="rasterio" />
+          <option value="gdal" />
+          <option value="scipy" />
+          <option value="scikit-learn" />
+          <option value="opencv-python" />
+          <option value="requests" />
+          <option value="h5py" />
+          <option value="netCDF4" />
+          <option value="pyproj" />
+          <option value="shapely" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>
